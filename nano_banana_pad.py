@@ -1,79 +1,101 @@
 """
 ComfyUI custom node to compute padding for Nano Banana Pro target dimensions.
-Uses actual supported sizes from the API.
+Maps standard API aspect ratios to actual output dimensions.
 """
 
-# Actual supported dimensions: (W, H, aspect_ratio, resolution)
-SUPPORTED_DIMENSIONS = [
-    # Landscape
-    (1584, 672, "33:14", "1K"),
-    (3168, 1344, "33:14", "2K"),
-    (6336, 2688, "33:14", "4K"),
-    
-    (1376, 768, "43:24", "1K"),
-    (2752, 1536, "43:24", "2K"),
-    (5504, 3072, "43:24", "4K"),
-    
-    (1264, 848, "79:53", "1K"),
-    (2528, 1696, "79:53", "2K"),
-    (5056, 3392, "79:53", "4K"),
-    
-    (1200, 896, "75:56", "1K"),
-    (2400, 1792, "75:56", "2K"),
-    (4800, 3584, "75:56", "4K"),
-    
-    (1152, 928, "36:29", "1K"),
-    (2304, 1856, "36:29", "2K"),
-    (4608, 3712, "36:29", "4K"),
-    
-    # Square
-    (1024, 1024, "1:1", "1K"),
-    (2048, 2048, "1:1", "2K"),
-    (4096, 4096, "1:1", "4K"),
-    
-    # Portrait
-    (928, 1152, "29:36", "1K"),
-    (1856, 2304, "29:36", "2K"),
-    (3712, 4608, "29:36", "4K"),
-    
-    (896, 1200, "56:75", "1K"),
-    (1792, 2400, "56:75", "2K"),
-    (3584, 4800, "56:75", "4K"),
-    
-    (848, 1264, "53:79", "1K"),
-    (1696, 2528, "53:79", "2K"),
-    (3392, 5056, "53:79", "4K"),
-    
-    (768, 1376, "24:43", "1K"),
-    (1536, 2752, "24:43", "2K"),
-    (3072, 5504, "24:43", "4K"),
-]
+# Mapping: API aspect_ratio -> actual output (W, H) per resolution
+# API accepts: 1:1, 3:2, 2:3, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9
+DIMENSION_MAP = {
+    # api_ratio: {resolution: (W, H)}
+    "1:1": {
+        "1K": (1024, 1024),
+        "2K": (2048, 2048),
+        "4K": (4096, 4096),
+    },
+    "5:4": {
+        "1K": (1152, 928),
+        "2K": (2304, 1856),
+        "4K": (4608, 3712),
+    },
+    "4:5": {
+        "1K": (928, 1152),
+        "2K": (1856, 2304),
+        "4K": (3712, 4608),
+    },
+    "4:3": {
+        "1K": (1200, 896),
+        "2K": (2400, 1792),
+        "4K": (4800, 3584),
+    },
+    "3:4": {
+        "1K": (896, 1200),
+        "2K": (1792, 2400),
+        "4K": (3584, 4800),
+    },
+    "3:2": {
+        "1K": (1264, 848),
+        "2K": (2528, 1696),
+        "4K": (5056, 3392),
+    },
+    "2:3": {
+        "1K": (848, 1264),
+        "2K": (1696, 2528),
+        "4K": (3392, 5056),
+    },
+    "16:9": {
+        "1K": (1376, 768),
+        "2K": (2752, 1536),
+        "4K": (5504, 3072),
+    },
+    "9:16": {
+        "1K": (768, 1376),
+        "2K": (1536, 2752),
+        "4K": (3072, 5504),
+    },
+    "21:9": {
+        "1K": (1584, 672),
+        "2K": (3168, 1344),
+        "4K": (6336, 2688),
+    },
+}
 
-VALID_ASPECT_RATIOS = ["auto", "33:14", "43:24", "79:53", "75:56", "36:29", "1:1", "29:36", "56:75", "53:79", "24:43"]
+VALID_ASPECT_RATIOS = ["auto", "1:1", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9"]
 VALID_RESOLUTIONS = ["auto", "1K", "2K", "4K"]
+
+
+def get_all_dimensions():
+    """Flatten DIMENSION_MAP into list of (W, H, api_ratio, resolution)."""
+    dims = []
+    for api_ratio, res_map in DIMENSION_MAP.items():
+        for res, (w, h) in res_map.items():
+            dims.append((w, h, api_ratio, res))
+    return dims
 
 
 def get_dimensions(aspect_ratio: str, resolution: str) -> tuple[int, int]:
     """Get (W, H) for a specific aspect_ratio and resolution."""
-    for w, h, ar, res in SUPPORTED_DIMENSIONS:
-        if ar == aspect_ratio and res == resolution:
-            return w, h
-    raise ValueError(f"No supported size for {aspect_ratio} @ {resolution}")
+    if aspect_ratio not in DIMENSION_MAP:
+        raise ValueError(f"Unknown aspect_ratio: {aspect_ratio}")
+    if resolution not in DIMENSION_MAP[aspect_ratio]:
+        raise ValueError(f"Unknown resolution: {resolution}")
+    return DIMENSION_MAP[aspect_ratio][resolution]
 
 
 def find_best_fit(W: int, H: int, must_grow: bool = True) -> tuple[str, str]:
     """Find smallest supported dimension that contains the image."""
+    all_dims = get_all_dimensions()
+    
     if must_grow:
-        candidates = [(w, h, ar, res) for w, h, ar, res in SUPPORTED_DIMENSIONS 
+        candidates = [(w, h, ar, res) for w, h, ar, res in all_dims 
                       if w >= W and h >= H and (w > W or h > H)]
     else:
-        candidates = [(w, h, ar, res) for w, h, ar, res in SUPPORTED_DIMENSIONS 
+        candidates = [(w, h, ar, res) for w, h, ar, res in all_dims 
                       if w >= W and h >= H]
     
     if not candidates:
         raise ValueError(
             f"Image {W}x{H} exceeds all supported sizes. "
-            f"Maximum supported is 6336x2688 (33:14 @ 4K) or 3072x5504 (24:43 @ 4K)."
+            f"Maximum supported is 6336x2688 (21:9 @ 4K) or 3072x5504 (9:16 @ 4K)."
         )
     
     # Sort by total pixels (smallest first)
@@ -118,9 +140,11 @@ class NanaBananaPadCalculator:
         elif aspect_ratio == "auto":
             # Fixed resolution, find best aspect ratio (must be strictly larger)
             candidates = []
-            for w, h, ar, res in SUPPORTED_DIMENSIONS:
-                if res == resolution and w >= W and h >= H and (w > W or h > H):
-                    candidates.append((w * h, ar))
+            for api_ratio, res_map in DIMENSION_MAP.items():
+                if resolution in res_map:
+                    tw, th = res_map[resolution]
+                    if tw >= W and th >= H and (tw > W or th > H):
+                        candidates.append((tw * th, api_ratio))
             
             if not candidates:
                 raise ValueError(
