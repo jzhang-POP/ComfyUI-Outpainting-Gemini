@@ -1,4 +1,4 @@
-# Vermeer-Gemini
+# ComfyUI-Outpainting-Gemini
 
 ComfyUI custom nodes for Gemini image generation and Nano Banana Pro outpainting workflows.
 
