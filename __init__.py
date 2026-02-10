@@ -37,15 +37,29 @@ class GeminiImageGenerate:
     FUNCTION = "generate"
     CATEGORY = "image/generate"
 
-    def generate(self, image: torch.Tensor, prompt: str, api_key: str, model: str, aspect_ratio: str, resolution: str):
-        # Convert ComfyUI tensor (BHWC, 0-1 float) to base64 PNG
+    def _tensor_to_base64(self, image: torch.Tensor) -> str:
+        """Convert a ComfyUI image tensor (BHWC, 0-1 float) to a base64 PNG string."""
         img_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
         pil_img = Image.fromarray(img_np)
-        
         buffer = BytesIO()
         pil_img.save(buffer, format="PNG")
-        img_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-        
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def generate(self, image: torch.Tensor, prompt: str, api_key: str, model: str, aspect_ratio: str, resolution: str,
+                 **kwargs):
+        # Collect all provided images (image + any image_N from dynamic inputs)
+        images = [image]
+        idx = 2
+        while f"image_{idx}" in kwargs:
+            images.append(kwargs[f"image_{idx}"])
+            idx += 1
+
+        # Build parts: text prompt + all images as inline_data
+        parts = [{"text": prompt}]
+        for img in images:
+            img_b64 = self._tensor_to_base64(img)
+            parts.append({"inline_data": {"mime_type": "image/png", "data": img_b64}})
+
         # Build request
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         headers = {
@@ -54,10 +68,7 @@ class GeminiImageGenerate:
         }
         payload = {
             "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": "image/png", "data": img_b64}},
-                ]
+                "parts": parts,
             }],
             "generationConfig": {
                 "responseModalities": ["Image"],
@@ -94,3 +105,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GeminiImageGenerate": "Gemini Image Generate",
 }
 NODE_DISPLAY_NAME_MAPPINGS.update(PAD_NODE_DISPLAY_NAME_MAPPINGS)
+
+WEB_DIRECTORY = "./web"
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
