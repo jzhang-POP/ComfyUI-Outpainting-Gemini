@@ -59,7 +59,19 @@ DIMENSION_MAP = {
     },
 }
 
-VALID_ASPECT_RATIOS = ["auto", "1:1", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9"]
+VALID_ASPECT_RATIOS = [
+    "auto",
+    "1:1",
+    "5:4",
+    "4:5",
+    "4:3",
+    "3:4",
+    "3:2",
+    "2:3",
+    "16:9",
+    "9:16",
+    "21:9",
+]
 VALID_RESOLUTIONS = ["auto", "1K", "2K", "4K"]
 
 
@@ -84,30 +96,34 @@ def get_dimensions(aspect_ratio: str, resolution: str) -> tuple[int, int]:
 def find_best_fit(W: int, H: int, must_grow: bool = True) -> tuple[str, str]:
     """Find smallest supported dimension that contains the image."""
     all_dims = get_all_dimensions()
-    
+
     if must_grow:
-        candidates = [(w, h, ar, res) for w, h, ar, res in all_dims 
-                      if w >= W and h >= H and (w > W or h > H)]
+        candidates = [
+            (w, h, ar, res)
+            for w, h, ar, res in all_dims
+            if w >= W and h >= H and (w > W or h > H)
+        ]
     else:
-        candidates = [(w, h, ar, res) for w, h, ar, res in all_dims 
-                      if w >= W and h >= H]
-    
+        candidates = [
+            (w, h, ar, res) for w, h, ar, res in all_dims if w >= W and h >= H
+        ]
+
     if not candidates:
         raise ValueError(
             f"Image {W}x{H} exceeds all supported sizes. "
             f"Maximum supported is 6336x2688 (21:9 @ 4K) or 3072x5504 (9:16 @ 4K)."
         )
-    
+
     # Sort by total pixels (smallest first)
     candidates.sort(key=lambda x: x[0] * x[1])
     _, _, best_ar, best_res = candidates[0]
-    
+
     return best_ar, best_res
 
 
 class NanaBananaPadCalculator:
     """Compute padding to reach a Nano Banana Pro dimension."""
-    
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -117,26 +133,39 @@ class NanaBananaPadCalculator:
                 "resolution": ("STRING", {"default": "auto"}),
             }
         }
-    
+
     RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT", "INT", "STRING", "STRING")
-    RETURN_NAMES = ("pad_left", "pad_right", "pad_top", "pad_bottom", "target_w", "target_h", "aspect_ratio", "resolution")
+    RETURN_NAMES = (
+        "pad_left",
+        "pad_right",
+        "pad_top",
+        "pad_bottom",
+        "target_w",
+        "target_h",
+        "aspect_ratio",
+        "resolution",
+    )
     FUNCTION = "calculate"
     CATEGORY = "image/padding"
 
     def calculate(self, image, aspect_ratio: str, resolution: str):
         # image shape: (batch, H, W, C)
         _, H, W, _ = image.shape
-        
+
         # Validate inputs
         if aspect_ratio not in VALID_ASPECT_RATIOS:
-            raise ValueError(f"Invalid aspect_ratio '{aspect_ratio}'. Valid: {VALID_ASPECT_RATIOS}")
+            raise ValueError(
+                f"Invalid aspect_ratio '{aspect_ratio}'. Valid: {VALID_ASPECT_RATIOS}"
+            )
         if resolution not in VALID_RESOLUTIONS:
-            raise ValueError(f"Invalid resolution '{resolution}'. Valid: {VALID_RESOLUTIONS}")
-        
+            raise ValueError(
+                f"Invalid resolution '{resolution}'. Valid: {VALID_RESOLUTIONS}"
+            )
+
         # Handle auto modes
         if aspect_ratio == "auto" and resolution == "auto":
             aspect_ratio, resolution = find_best_fit(W, H, must_grow=True)
-        
+
         elif aspect_ratio == "auto":
             # Fixed resolution, find best aspect ratio (must be strictly larger)
             candidates = []
@@ -145,14 +174,14 @@ class NanaBananaPadCalculator:
                     tw, th = res_map[resolution]
                     if tw >= W and th >= H and (tw > W or th > H):
                         candidates.append((tw * th, api_ratio))
-            
+
             if not candidates:
                 raise ValueError(
                     f"Image {W}x{H} too large for {resolution}. Choose higher resolution."
                 )
             candidates.sort()
             aspect_ratio = candidates[0][1]
-        
+
         elif resolution == "auto":
             # Fixed aspect ratio, find smallest resolution that is strictly larger
             for res in ["1K", "2K", "4K"]:
@@ -164,31 +193,36 @@ class NanaBananaPadCalculator:
                 raise ValueError(
                     f"Image {W}x{H} too large for {aspect_ratio} at any resolution."
                 )
-        
+
         # Get final target dimensions
         tw, th = get_dimensions(aspect_ratio, resolution)
-        
+
         if tw < W or th < H:
             raise ValueError(
                 f"Image {W}x{H} is larger than target {tw}x{th} ({aspect_ratio} @ {resolution}). "
                 f"Choose a higher resolution or different aspect ratio."
             )
-        
+
         pad_h = tw - W
         pad_v = th - H
-        
+
         pad_left = pad_h // 2
         pad_right = pad_h - pad_left
         pad_top = pad_v // 2
         pad_bottom = pad_v - pad_top
-        
-        return (pad_left, pad_right, pad_top, pad_bottom, tw, th, aspect_ratio, resolution)
+
+        return (
+            pad_left,
+            pad_right,
+            pad_top,
+            pad_bottom,
+            tw,
+            th,
+            aspect_ratio,
+            resolution,
+        )
 
 
-NODE_CLASS_MAPPINGS = {
-    "NanaBananaPadCalculator": NanaBananaPadCalculator
-}
+NODE_CLASS_MAPPINGS = {"NanaBananaPadCalculator": NanaBananaPadCalculator}
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "NanaBananaPadCalculator": "Nano Banana Pad Calculator"
-}
+NODE_DISPLAY_NAME_MAPPINGS = {"NanaBananaPadCalculator": "Nano Banana Pad Calculator"}
