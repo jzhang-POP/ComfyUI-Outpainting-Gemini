@@ -3,6 +3,74 @@ ComfyUI custom node to compute padding for Nano Banana Pro target dimensions.
 Maps standard API aspect ratios to actual output dimensions.
 """
 
+import numpy as np
+import torch
+
+# Colors candidates for outpainting fill — checked in order, first absent color wins
+_COLORS_CANDIDATES = [
+    (255, 0, 255),  # magenta
+    (0, 255, 0),  # green
+    (0, 255, 255),  # cyan
+    (255, 255, 0),  # yellow
+    (0, 0, 0),  # black
+    (255, 255, 255),  # white
+    (255, 0, 0),  # red
+    (0, 0, 255),  # blue
+    (128, 0, 128),  # purple
+    (0, 128, 128),  # teal
+    (128, 128, 0),  # olive
+    (1, 0, 0),  # near-black variants
+    (0, 1, 0),
+    (0, 0, 1),
+    (254, 0, 255),
+    (255, 0, 254),
+]
+
+
+def find_unique_fill_color(image_np: np.ndarray) -> tuple[int, int, int]:
+    """Find an RGB color not present in the image.
+
+    Args:
+        image_np: (H, W, 3) uint8 numpy array
+
+    Returns:
+        (R, G, B) tuple guaranteed absent from the image
+    """
+    pixels = image_np.reshape(-1, 3)
+    packed = set(
+        pixels[:, 0].astype(np.uint32) << 16
+        | pixels[:, 1].astype(np.uint32) << 8
+        | pixels[:, 2].astype(np.uint32)
+    )
+
+    for r, g, b in _COLORS_CANDIDATES:
+        key = (r << 16) | (g << 8) | b
+        if key not in packed:
+            return (r, g, b)
+
+    # Fallback: brute-force search (virtually impossible to reach with 16 candidates)
+    try:
+        from scipy.spatial import KDTree
+
+        unique = np.unique(pixels, axis=0).astype(np.float64)
+        tree = KDTree(unique)
+        best_color = _COLORS_CANDIDATES[0]
+        best_dist = 0.0
+        axes = np.arange(0, 256, 32)
+        grid = (
+            np.stack(np.meshgrid(axes, axes, axes), axis=-1)
+            .reshape(-1, 3)
+            .astype(np.float64)
+        )
+        dists, _ = tree.query(grid)
+        best_idx = np.argmax(dists)
+        if dists[best_idx] > best_dist:
+            best_color = tuple(int(v) for v in grid[best_idx])
+        return best_color
+    except ImportError:
+        return _COLORS_CANDIDATES[0]
+
+
 # Mapping: API aspect_ratio -> actual output (W, H) per resolution
 # API accepts: 1:1, 3:2, 2:3, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9
 DIMENSION_MAP = {
@@ -134,7 +202,7 @@ class NanaBananaPadCalculator:
             }
         }
 
-    RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT", "INT", "STRING", "STRING")
+    RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT", "INT", "STRING", "STRING", "IMAGE")
     RETURN_NAMES = (
         "pad_left",
         "pad_right",
@@ -144,6 +212,7 @@ class NanaBananaPadCalculator:
         "target_h",
         "aspect_ratio",
         "resolution",
+        "fill_color",
     )
     FUNCTION = "calculate"
     CATEGORY = "image/padding"
@@ -211,6 +280,14 @@ class NanaBananaPadCalculator:
         pad_top = pad_v // 2
         pad_bottom = pad_v - pad_top
 
+        # Find a unique fill color not present in the input image
+        img_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
+        r, g, b = find_unique_fill_color(img_np)
+
+        # Create a solid color image at target dimensions (BHWC, 0-1 float)
+        fill = np.full((1, th, tw, 3), [r / 255.0, g / 255.0, b / 255.0], dtype=np.float32)
+        fill_tensor = torch.from_numpy(fill)
+
         return (
             pad_left,
             pad_right,
@@ -220,6 +297,7 @@ class NanaBananaPadCalculator:
             th,
             aspect_ratio,
             resolution,
+            fill_tensor,
         )
 
 
