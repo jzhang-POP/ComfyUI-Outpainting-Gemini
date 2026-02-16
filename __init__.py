@@ -7,11 +7,11 @@ import os
 import subprocess
 import tempfile
 import time
+import re
 from io import BytesIO
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from .nano_banana_pad import (
-    NanaBananaPadCalculator,
     NODE_CLASS_MAPPINGS as PAD_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as PAD_NODE_DISPLAY_NAME_MAPPINGS,
 )
@@ -112,7 +112,10 @@ class GeminiImageGenerate:
                 "image": ("IMAGE",),
                 "prompt": (
                     "STRING",
-                    {"multiline": True, "default": "Transform this image"},
+                    {
+                        "multiline": True,
+                        "default": "Extend the first image naturally. The areas matching the color shown in the second image are what must be filled. Pixels that do not match the second image's color should be left untouched and remains exactly the same.",
+                    },
                 ),
                 "service_account_base64": ("STRING", {"default": ""}),
                 "model": (cls.MODELS, {"default": cls.MODELS[0]}),
@@ -183,8 +186,6 @@ class GeminiImageGenerate:
         # Call API
         resp = requests.post(url, headers=headers, json=payload, timeout=600)
         if not resp.ok:
-            import re
-
             body = resp.text
             body = re.sub(
                 r'"data"\s*:\s*"[A-Za-z0-9+/=]{100,}"',
@@ -224,12 +225,88 @@ class GeminiImageGenerate:
         return (output_tensor,)
 
 
+class GeminiComposite:
+    """Composite original image back onto Gemini output with feathered edges."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "generated_image": ("IMAGE",),
+                "original_image": ("IMAGE",),
+                "pad_left": ("INT", {"default": 0}),
+                "pad_top": ("INT", {"default": 0}),
+                "pad_right": ("INT", {"default": 0}),
+                "pad_bottom": ("INT", {"default": 0}),
+                "expand": ("INT", {"default": 4, "min": 0, "max": 64}),
+                "blur_radius": ("INT", {"default": 4, "min": 0, "max": 64}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "composite"
+    CATEGORY = "image/generate"
+
+    def composite(
+        self,
+        generated_image: torch.Tensor,
+        original_image: torch.Tensor,
+        pad_left: int,
+        pad_top: int,
+        pad_right: int,
+        pad_bottom: int,
+        expand: int,
+        blur_radius: int,
+    ):
+        # Convert tensors to PIL
+        gen_np = (generated_image[0].cpu().numpy() * 255).astype(np.uint8)
+        gen_pil = Image.fromarray(gen_np)
+
+        orig_np = (original_image[0].cpu().numpy() * 255).astype(np.uint8)
+        orig_pil = Image.fromarray(orig_np)
+
+        tw, th = gen_pil.size
+        w, h = orig_pil.size
+
+        # Build outpaint mask at padded dimensions (white=padded, black=original)
+        outpaint_mask = Image.new("L", (tw, th), 255)
+        outpaint_mask.paste(0, (pad_left, pad_top, pad_left + w, pad_top + h))
+
+        # Dilate mask (grow padded area into original)
+        for _ in range(expand):
+            outpaint_mask = outpaint_mask.filter(ImageFilter.MaxFilter(3))
+
+        # Blur for feathered edges
+        if blur_radius > 0:
+            outpaint_mask = outpaint_mask.filter(
+                ImageFilter.GaussianBlur(radius=blur_radius)
+            )
+
+        # Invert: white=original area to keep, black=Gemini fills
+        inverted_mask = Image.eval(outpaint_mask, lambda x: 255 - x)
+
+        # Paste original onto Gemini result using feathered mask
+        gen_pil.paste(
+            orig_pil,
+            (pad_left, pad_top),
+            inverted_mask.crop((pad_left, pad_top, pad_left + w, pad_top + h)),
+        )
+
+        # Convert back to tensor
+        out_np = np.array(gen_pil).astype(np.float32) / 255.0
+        out_tensor = torch.from_numpy(out_np).unsqueeze(0)
+
+        return (out_tensor,)
+
+
 NODE_CLASS_MAPPINGS = {
     "GeminiImageGenerate": GeminiImageGenerate,
+    "GeminiComposite": GeminiComposite,
 }
 NODE_CLASS_MAPPINGS.update(PAD_NODE_CLASS_MAPPINGS)
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "GeminiImageGenerate": "Gemini Image Generate",
+    "GeminiComposite": "Gemini Composite",
 }
 NODE_DISPLAY_NAME_MAPPINGS.update(PAD_NODE_DISPLAY_NAME_MAPPINGS)
