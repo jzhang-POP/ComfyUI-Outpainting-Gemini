@@ -174,7 +174,7 @@ class GeminiImageGenerate:
         payload = {
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
-                "responseModalities": ["TEXT", "IMAGE"],
+                "responseModalities": ["IMAGE"],
                 "imageConfig": {
                     "aspectRatio": aspect_ratio,
                     "imageSize": resolution,
