@@ -125,6 +125,9 @@ class GeminiImageGenerate:
             },
             "optional": {
                 "image_2": ("IMAGE",),
+                "image_3": ("IMAGE",),
+                "image_4": ("IMAGE",),
+                "image_5": ("IMAGE",),
             },
         }
 
@@ -150,11 +153,15 @@ class GeminiImageGenerate:
         aspect_ratio: str,
         resolution: str,
         image_2: torch.Tensor = None,
+        image_3: torch.Tensor = None,
+        image_4: torch.Tensor = None,
+        image_5: torch.Tensor = None,
     ):
         # Collect all provided images
         images = [image]
-        if image_2 is not None:
-            images.append(image_2)
+        for img in [image_2, image_3, image_4, image_5]:
+            if img is not None:
+                images.append(img)
 
         # Build parts: text prompt + all images as inline_data
         parts = [{"text": prompt}]
@@ -183,8 +190,16 @@ class GeminiImageGenerate:
             "safety_settings": SAFETY_SETTINGS,
         }
 
-        # Call API
-        resp = requests.post(url, headers=headers, json=payload, timeout=600)
+        # Call API with exponential backoff on 429
+        max_retries = 10
+        for attempt in range(max_retries):
+            resp = requests.post(url, headers=headers, json=payload, timeout=600)
+            if resp.status_code == 429 and attempt < max_retries - 1:
+                wait = 2 ** attempt
+                print(f"[Gemini] Rate limited (429), retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            break
         if not resp.ok:
             body = resp.text
             body = re.sub(
@@ -239,11 +254,13 @@ class GeminiComposite:
                 "pad_right": ("INT", {"default": 0}),
                 "pad_bottom": ("INT", {"default": 0}),
                 "expand": ("INT", {"default": 4, "min": 0, "max": 64}),
+                "max_filter_size": ("INT", {"default": 3, "min": 3, "max": 15, "step": 2}),
                 "blur_radius": ("INT", {"default": 4, "min": 0, "max": 64}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE")
+    RETURN_NAMES = ("image", "outpaint_mask", "paste_mask")
     FUNCTION = "composite"
     CATEGORY = "image/generate"
 
@@ -256,6 +273,7 @@ class GeminiComposite:
         pad_right: int,
         pad_bottom: int,
         expand: int,
+        max_filter_size: int,
         blur_radius: int,
     ):
         # Convert tensors to PIL
@@ -273,8 +291,10 @@ class GeminiComposite:
         outpaint_mask.paste(0, (pad_left, pad_top, pad_left + w, pad_top + h))
 
         # Dilate mask (grow padded area into original)
+        # Ensure odd kernel size
+        kernel = max_filter_size if max_filter_size % 2 == 1 else max_filter_size + 1
         for _ in range(expand):
-            outpaint_mask = outpaint_mask.filter(ImageFilter.MaxFilter(3))
+            outpaint_mask = outpaint_mask.filter(ImageFilter.MaxFilter(kernel))
 
         # Blur for feathered edges
         if blur_radius > 0:
@@ -292,11 +312,18 @@ class GeminiComposite:
             inverted_mask.crop((pad_left, pad_top, pad_left + w, pad_top + h)),
         )
 
+        # Convert masks to tensors for debug output (grayscale -> RGB)
+        outpaint_mask_np = np.array(outpaint_mask).astype(np.float32) / 255.0
+        outpaint_mask_tensor = torch.from_numpy(outpaint_mask_np).unsqueeze(0).unsqueeze(-1).repeat(1, 1, 1, 3)
+
+        paste_mask_np = np.array(inverted_mask).astype(np.float32) / 255.0
+        paste_mask_tensor = torch.from_numpy(paste_mask_np).unsqueeze(0).unsqueeze(-1).repeat(1, 1, 1, 3)
+
         # Convert back to tensor
         out_np = np.array(gen_pil).astype(np.float32) / 255.0
         out_tensor = torch.from_numpy(out_np).unsqueeze(0)
 
-        return (out_tensor,)
+        return (out_tensor, outpaint_mask_tensor, paste_mask_tensor)
 
 
 NODE_CLASS_MAPPINGS = {

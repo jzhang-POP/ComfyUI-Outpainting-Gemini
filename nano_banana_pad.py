@@ -136,30 +136,55 @@ def get_dimensions(aspect_ratio: str, resolution: str) -> tuple[int, int]:
     return DIMENSION_MAP[aspect_ratio][resolution]
 
 
-def find_best_fit(W: int, H: int, must_grow: bool = True) -> tuple[str, str]:
-    """Find smallest supported dimension that contains the image."""
+VALID_FIT_MODES = ["superior", "inferior", "closest"]
+
+
+def find_best_fit(W: int, H: int, mode: str = "superior") -> tuple[str, str]:
+    """Find best supported dimension for the image.
+
+    Modes:
+        superior: smallest dimension that fully contains the image (pad)
+        inferior: largest dimension that fits inside the image (crop)
+        closest: whichever dimension is closest in area
+    """
     all_dims = get_all_dimensions()
 
-    if must_grow:
+    if mode == "superior":
         candidates = [
             (w, h, ar, res)
             for w, h, ar, res in all_dims
             if w >= W and h >= H and (w > W or h > H)
         ]
-    else:
+        if not candidates:
+            raise ValueError(
+                f"Image {W}x{H} exceeds all supported sizes. "
+                f"Maximum supported is 6336x2688 (21:9 @ 4K) or 3072x5504 (9:16 @ 4K)."
+            )
+        candidates.sort(key=lambda x: x[0] * x[1])
+
+    elif mode == "inferior":
         candidates = [
-            (w, h, ar, res) for w, h, ar, res in all_dims if w >= W and h >= H
+            (w, h, ar, res)
+            for w, h, ar, res in all_dims
+            if w <= W and h <= H and (w < W or h < H)
         ]
+        if not candidates:
+            raise ValueError(
+                f"Image {W}x{H} is smaller than all supported sizes."
+            )
+        candidates.sort(key=lambda x: x[0] * x[1], reverse=True)
 
-    if not candidates:
-        raise ValueError(
-            f"Image {W}x{H} exceeds all supported sizes. "
-            f"Maximum supported is 6336x2688 (21:9 @ 4K) or 3072x5504 (9:16 @ 4K)."
-        )
+    elif mode == "closest":
+        candidates = list(all_dims)
+        if not candidates:
+            raise ValueError("No supported dimensions available.")
+        img_area = W * H
+        candidates.sort(key=lambda x: abs(x[0] * x[1] - img_area))
 
-    candidates.sort(key=lambda x: x[0] * x[1])
+    else:
+        raise ValueError(f"Invalid mode '{mode}'. Valid: {VALID_FIT_MODES}")
+
     _, _, best_ar, best_res = candidates[0]
-
     return best_ar, best_res
 
 
@@ -238,9 +263,13 @@ def find_unique_fill_color(image: Image.Image) -> tuple[int, int, int]:
 
 
 def calculate_padding(
-    W: int, H: int, aspect_ratio: str = "auto", resolution: str = "auto"
+    W: int, H: int, aspect_ratio: str = "auto", resolution: str = "auto",
+    mode: str = "superior",
 ) -> dict:
-    """Calculate padding needed to reach target dimensions."""
+    """Calculate padding/cropping needed to reach target dimensions.
+
+    Returns dict with pad values (positive = pad, negative = crop).
+    """
     if aspect_ratio not in VALID_ASPECT_RATIOS:
         raise ValueError(
             f"Invalid aspect_ratio '{aspect_ratio}'. Valid: {VALID_ASPECT_RATIOS}"
@@ -249,41 +278,67 @@ def calculate_padding(
         raise ValueError(
             f"Invalid resolution '{resolution}'. Valid: {VALID_RESOLUTIONS}"
         )
+    if mode not in VALID_FIT_MODES:
+        raise ValueError(
+            f"Invalid mode '{mode}'. Valid: {VALID_FIT_MODES}"
+        )
 
     if aspect_ratio == "auto" and resolution == "auto":
-        aspect_ratio, resolution = find_best_fit(W, H, must_grow=True)
+        aspect_ratio, resolution = find_best_fit(W, H, mode=mode)
     elif aspect_ratio == "auto":
+        img_area = W * H
         candidates = []
         for api_ratio, res_map in DIMENSION_MAP.items():
             if resolution in res_map:
                 tw, th = res_map[resolution]
-                if tw >= W and th >= H and (tw > W or th > H):
+                if mode == "superior" and tw >= W and th >= H and (tw > W or th > H):
                     candidates.append((tw * th, api_ratio))
+                elif mode == "inferior" and tw <= W and th <= H and (tw < W or th < H):
+                    candidates.append((-tw * th, api_ratio))  # negative so sort picks largest
+                elif mode == "closest":
+                    candidates.append((abs(tw * th - img_area), api_ratio))
         if not candidates:
             raise ValueError(
-                f"Image {W}x{H} too large for {resolution}. Choose higher resolution."
+                f"No matching dimension for image {W}x{H} at {resolution} in mode '{mode}'."
             )
         candidates.sort()
         aspect_ratio = candidates[0][1]
     elif resolution == "auto":
-        for res in ["1K", "2K", "4K"]:
-            tw, th = get_dimensions(aspect_ratio, res)
-            if tw >= W and th >= H and (tw > W or th > H):
-                resolution = res
-                break
-        else:
-            raise ValueError(
-                f"Image {W}x{H} too large for {aspect_ratio} at any resolution."
-            )
+        if mode == "superior":
+            for res in ["1K", "2K", "4K"]:
+                tw, th = get_dimensions(aspect_ratio, res)
+                if tw >= W and th >= H and (tw > W or th > H):
+                    resolution = res
+                    break
+            else:
+                raise ValueError(
+                    f"Image {W}x{H} too large for {aspect_ratio} at any resolution."
+                )
+        elif mode == "inferior":
+            for res in ["4K", "2K", "1K"]:
+                tw, th = get_dimensions(aspect_ratio, res)
+                if tw <= W and th <= H and (tw < W or th < H):
+                    resolution = res
+                    break
+            else:
+                raise ValueError(
+                    f"Image {W}x{H} too small for {aspect_ratio} at any resolution."
+                )
+        elif mode == "closest":
+            img_area = W * H
+            best_res = None
+            best_diff = float("inf")
+            for res in ["1K", "2K", "4K"]:
+                tw, th = get_dimensions(aspect_ratio, res)
+                diff = abs(tw * th - img_area)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_res = res
+            resolution = best_res
 
     tw, th = get_dimensions(aspect_ratio, resolution)
 
-    if tw < W or th < H:
-        raise ValueError(
-            f"Image {W}x{H} is larger than target {tw}x{th} ({aspect_ratio} @ {resolution}). "
-            f"Choose a higher resolution or different aspect ratio."
-        )
-
+    # pad_h/pad_v: positive = pad, negative = crop
     pad_h = tw - W
     pad_v = th - H
 
@@ -304,22 +359,32 @@ def pad_image(
     aspect_ratio: str = "auto",
     resolution: str = "auto",
     fill_color: tuple | None = None,
+    mode: str = "superior",
 ) -> tuple[Image.Image, dict]:
-    """Pad an image to match Gemini API dimensions."""
+    """Pad or crop an image to match Gemini API dimensions."""
     W, H = image.size
-    padding_info = calculate_padding(W, H, aspect_ratio, resolution)
+    padding_info = calculate_padding(W, H, aspect_ratio, resolution, mode=mode)
 
-    if fill_color is None:
-        fill_color = find_unique_fill_color(image)
-        padding_info["fill_color"] = fill_color
+    tw = padding_info["target_width"]
+    th = padding_info["target_height"]
+    pl = padding_info["pad_left"]
+    pt = padding_info["pad_top"]
 
-    if image.mode != "RGB" and len(fill_color) == 3:
+    if image.mode != "RGB":
         image = image.convert("RGB")
 
-    new_image = Image.new(
-        "RGB", (padding_info["target_width"], padding_info["target_height"]), fill_color
-    )
-    new_image.paste(image, (padding_info["pad_left"], padding_info["pad_top"]))
+    if tw >= W and th >= H:
+        # Padding: target is larger or equal
+        if fill_color is None:
+            fill_color = find_unique_fill_color(image)
+        padding_info["fill_color"] = fill_color
+        new_image = Image.new("RGB", (tw, th), fill_color)
+        new_image.paste(image, (pl, pt))
+    else:
+        # Cropping: target is smaller, pad values are negative
+        crop_left = -pl
+        crop_top = -pt
+        new_image = image.crop((crop_left, crop_top, crop_left + tw, crop_top + th))
 
     return new_image, padding_info
 
@@ -334,7 +399,7 @@ def unpad_image(padded_image: Image.Image, padding_info: dict) -> Image.Image:
     return padded_image.crop((left, top, right, bottom))
 
 
-class NanaBananaPadCalculator:
+class GeminiPadCalculator:
     """Compute padding and produce padded image for Gemini outpainting."""
 
     @classmethod
@@ -344,6 +409,7 @@ class NanaBananaPadCalculator:
                 "image": ("IMAGE",),
                 "aspect_ratio": ("STRING", {"default": "auto"}),
                 "resolution": ("STRING", {"default": "auto"}),
+                "mode": (VALID_FIT_MODES, {"default": "superior"}),
             }
         }
 
@@ -363,14 +429,14 @@ class NanaBananaPadCalculator:
     FUNCTION = "calculate"
     CATEGORY = "image/padding"
 
-    def calculate(self, image, aspect_ratio: str, resolution: str):
+    def calculate(self, image, aspect_ratio: str, resolution: str, mode: str):
         _, H, W, _ = image.shape
 
         # Convert tensor to PIL for pad_image
         img_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
         pil_img = Image.fromarray(img_np)
 
-        padded_pil, padding_info = pad_image(pil_img, aspect_ratio, resolution)
+        padded_pil, padding_info = pad_image(pil_img, aspect_ratio, resolution, mode=mode)
 
         tw = padding_info["target_width"]
         th = padding_info["target_height"]
@@ -399,6 +465,6 @@ class NanaBananaPadCalculator:
         )
 
 
-NODE_CLASS_MAPPINGS = {"NanaBananaPadCalculator": NanaBananaPadCalculator}
+NODE_CLASS_MAPPINGS = {"GeminiPadCalculator": GeminiPadCalculator}
 
-NODE_DISPLAY_NAME_MAPPINGS = {"NanaBananaPadCalculator": "Nano Banana Pad Calculator"}
+NODE_DISPLAY_NAME_MAPPINGS = {"GeminiPadCalculator": "Gemini Pad Calculator"}
