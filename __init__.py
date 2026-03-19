@@ -103,6 +103,7 @@ class GeminiImageGenerate:
 
     MODELS = [
         "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image-preview",
     ]
 
     @classmethod
@@ -118,12 +119,13 @@ class GeminiImageGenerate:
                     },
                 ),
                 "service_account_base64": ("STRING", {"default": ""}),
-                "model": (cls.MODELS, {"default": cls.MODELS[0]}),
+                "model": (cls.MODELS + ["custom"], {"default": cls.MODELS[0]}),
                 "location": ("STRING", {"default": "us-central1"}),
                 "aspect_ratio": ("STRING", {"default": "1:1"}),
                 "resolution": ("STRING", {"default": "1K"}),
             },
             "optional": {
+                "custom_model": ("STRING", {"default": ""}),
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
                 "image_4": ("IMAGE",),
@@ -152,11 +154,15 @@ class GeminiImageGenerate:
         location: str,
         aspect_ratio: str,
         resolution: str,
+        custom_model: str = "",
         image_2: torch.Tensor = None,
         image_3: torch.Tensor = None,
         image_4: torch.Tensor = None,
         image_5: torch.Tensor = None,
     ):
+        if model == "custom" and custom_model:
+            model = custom_model
+
         # Collect all provided images
         images = [image]
         for img in [image_2, image_3, image_4, image_5]:
