@@ -117,6 +117,7 @@ def get_edge_average_color(image: Image.Image, band: int = 10) -> tuple[int, int
     """Compute mean RGB from the outermost pixel band of the image."""
     pixels = np.array(image.convert("RGB"))
     h, w = pixels.shape[:2]
+    band = min(band, h // 2, w // 2)
 
     top = pixels[:band, :]
     bottom = pixels[-band:, :]
@@ -438,75 +439,87 @@ class GeminiPadCalculator:
             }
         }
 
-        RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT", "INT", "STRING", "STRING", "IMAGE", "IMAGE", "MASK")
-        RETURN_NAMES = (
-            "pad_left",
-            "pad_right",
-            "pad_top",
-            "pad_bottom",
-            "target_w",
-            "target_h",
-            "aspect_ratio",
-            "resolution",
-            "fill_color",
-            "padded_image",
-            "outpaint_mask",
-        )
+    RETURN_TYPES = (
+        "INT",
+        "INT",
+        "INT",
+        "INT",
+        "INT",
+        "INT",
+        "STRING",
+        "STRING",
+        "IMAGE",
+        "IMAGE",
+        "MASK",
+    )
+    RETURN_NAMES = (
+        "pad_left",
+        "pad_right",
+        "pad_top",
+        "pad_bottom",
+        "target_w",
+        "target_h",
+        "aspect_ratio",
+        "resolution",
+        "fill_color",
+        "padded_image",
+        "outpaint_mask",
+    )
 
-        FUNCTION = "calculate"
-        CATEGORY = "image/padding"
+    FUNCTION = "calculate"
+    CATEGORY = "image/padding"
 
     def calculate(self, image, aspect_ratio: str, resolution: str, mode: str):
-    _, H, W, _ = image.shape
+        _, H, W, _ = image.shape
 
-    # Convert tensor to PIL for pad_image
-    img_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
-    pil_img = Image.fromarray(img_np)
+        # Convert tensor to PIL for pad_image
+        img_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
+        pil_img = Image.fromarray(img_np)
 
-    # Use average edge color instead of unique color
-    fill_color = get_edge_average_color(pil_img)
+        # Use average edge color instead of unique color
+        fill_color = get_edge_average_color(pil_img)
 
-    padded_pil, padding_info = pad_image(
-        pil_img, aspect_ratio, resolution, fill_color=fill_color, mode=mode
-    )
+        padded_pil, padding_info = pad_image(
+            pil_img, aspect_ratio, resolution, fill_color=fill_color, mode=mode
+        )
 
-    tw = padding_info["target_width"]
-    th = padding_info["target_height"]
-    r, g, b = fill_color
+        tw = padding_info["target_width"]
+        th = padding_info["target_height"]
+        r, g, b = fill_color
 
-    # Fill color image (BHWC, 0-1 float)
-    fill = np.full(
-        (1, th, tw, 3), [r / 255.0, g / 255.0, b / 255.0], dtype=np.float32
-    )
-    fill_tensor = torch.from_numpy(fill)
+        # Fill color image (BHWC, 0-1 float)
+        fill = np.full(
+            (1, th, tw, 3), [r / 255.0, g / 255.0, b / 255.0], dtype=np.float32
+        )
+        fill_tensor = torch.from_numpy(fill)
 
-    # Padded image (BHWC, 0-1 float)
-    padded_np = np.array(padded_pil).astype(np.float32) / 255.0
-    padded_tensor = torch.from_numpy(padded_np).unsqueeze(0)
+        # Padded image (BHWC, 0-1 float)
+        padded_np = np.array(padded_pil).astype(np.float32) / 255.0
+        padded_tensor = torch.from_numpy(padded_np).unsqueeze(0)
 
-    # Outpaint mask: 1.0 = fill area, 0.0 = original content
-    pl = padding_info["pad_left"]
-    pt = padding_info["pad_top"]
-    mask = np.zeros((th, tw), dtype=np.float32)
-    mask[:pt, :] = 1.0              # top
-    mask[pt + H:, :] = 1.0          # bottom
-    mask[:, :pl] = 1.0              # left
-    mask[:, pl + W:] = 1.0          # right
-    mask_tensor = torch.from_numpy(mask).unsqueeze(0)
+        # Outpaint mask: 1.0 = fill area, 0.0 = original content
+        pl = padding_info["pad_left"]
+        pt = padding_info["pad_top"]
+        mask = np.zeros((th, tw), dtype=np.float32)
+        mask[:pt, :] = 1.0  # top
+        mask[pt + H :, :] = 1.0  # bottom
+        mask[:, :pl] = 1.0  # left
+        mask[:, pl + W :] = 1.0  # right
+        mask_tensor = torch.from_numpy(mask).unsqueeze(0)
 
-    return (
-        padding_info["pad_left"],
-        padding_info["pad_right"],
-        padding_info["pad_top"],
-        padding_info["pad_bottom"],
-        tw,
-        th,
-        padding_info["aspect_ratio"],
-        padding_info["resolution"],
-        fill_tensor,
-        padded_tensor,
-        mask_tensor,
-    )
+        return (
+            padding_info["pad_left"],
+            padding_info["pad_right"],
+            padding_info["pad_top"],
+            padding_info["pad_bottom"],
+            tw,
+            th,
+            padding_info["aspect_ratio"],
+            padding_info["resolution"],
+            fill_tensor,
+            padded_tensor,
+            mask_tensor,
+        )
 
 
 NODE_CLASS_MAPPINGS = {"GeminiPadCalculator": GeminiPadCalculator}
