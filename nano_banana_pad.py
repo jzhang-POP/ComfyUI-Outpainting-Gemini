@@ -113,6 +113,29 @@ _COLOR_NAMES = {
 }
 
 
+def get_edge_average_color(image: Image.Image, band: int = 10) -> tuple[int, int, int]:
+    """Compute mean RGB from the outermost pixel band of the image."""
+    pixels = np.array(image.convert("RGB"))
+    h, w = pixels.shape[:2]
+
+    top = pixels[:band, :]
+    bottom = pixels[-band:, :]
+    left = pixels[band:-band, :band]
+    right = pixels[band:-band, -band:]
+
+    edge_pixels = np.concatenate(
+        [
+            top.reshape(-1, 3),
+            bottom.reshape(-1, 3),
+            left.reshape(-1, 3),
+            right.reshape(-1, 3),
+        ]
+    )
+
+    mean = edge_pixels.mean(axis=0).astype(np.uint8)
+    return (int(mean[0]), int(mean[1]), int(mean[2]))
+
+
 def get_color_name(rgb: tuple[int, int, int]) -> str:
     """Return a human-readable name for an RGB color, or a hex string if unknown."""
     return _COLOR_NAMES.get(rgb, f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}")
@@ -169,9 +192,7 @@ def find_best_fit(W: int, H: int, mode: str = "superior") -> tuple[str, str]:
             if w <= W and h <= H and (w < W or h < H)
         ]
         if not candidates:
-            raise ValueError(
-                f"Image {W}x{H} is smaller than all supported sizes."
-            )
+            raise ValueError(f"Image {W}x{H} is smaller than all supported sizes.")
         candidates.sort(key=lambda x: x[0] * x[1], reverse=True)
 
     elif mode == "closest":
@@ -263,7 +284,10 @@ def find_unique_fill_color(image: Image.Image) -> tuple[int, int, int]:
 
 
 def calculate_padding(
-    W: int, H: int, aspect_ratio: str = "auto", resolution: str = "auto",
+    W: int,
+    H: int,
+    aspect_ratio: str = "auto",
+    resolution: str = "auto",
     mode: str = "superior",
 ) -> dict:
     """Calculate padding/cropping needed to reach target dimensions.
@@ -279,9 +303,7 @@ def calculate_padding(
             f"Invalid resolution '{resolution}'. Valid: {VALID_RESOLUTIONS}"
         )
     if mode not in VALID_FIT_MODES:
-        raise ValueError(
-            f"Invalid mode '{mode}'. Valid: {VALID_FIT_MODES}"
-        )
+        raise ValueError(f"Invalid mode '{mode}'. Valid: {VALID_FIT_MODES}")
 
     if aspect_ratio == "auto" and resolution == "auto":
         aspect_ratio, resolution = find_best_fit(W, H, mode=mode)
@@ -294,7 +316,9 @@ def calculate_padding(
                 if mode == "superior" and tw >= W and th >= H and (tw > W or th > H):
                     candidates.append((tw * th, api_ratio))
                 elif mode == "inferior" and tw <= W and th <= H and (tw < W or th < H):
-                    candidates.append((-tw * th, api_ratio))  # negative so sort picks largest
+                    candidates.append(
+                        (-tw * th, api_ratio)
+                    )  # negative so sort picks largest
                 elif mode == "closest":
                     candidates.append((abs(tw * th - img_area), api_ratio))
         if not candidates:
@@ -376,7 +400,8 @@ def pad_image(
     if tw >= W and th >= H:
         # Padding: target is larger or equal
         if fill_color is None:
-            fill_color = find_unique_fill_color(image)
+            # fill_color = find_unique_fill_color(image)
+            fill_color = get_edge_average_color(image)
         padding_info["fill_color"] = fill_color
         new_image = Image.new("RGB", (tw, th), fill_color)
         new_image.paste(image, (pl, pt))
@@ -413,7 +438,7 @@ class GeminiPadCalculator:
             }
         }
 
-    RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT", "INT", "STRING", "STRING", "IMAGE", "IMAGE")
+    RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT", "INT", "STRING", "STRING", "IMAGE", "IMAGE", "MASK")
     RETURN_NAMES = (
         "pad_left",
         "pad_right",
@@ -425,44 +450,63 @@ class GeminiPadCalculator:
         "resolution",
         "fill_color",
         "padded_image",
+        "outpaint_mask",
     )
+
     FUNCTION = "calculate"
     CATEGORY = "image/padding"
 
     def calculate(self, image, aspect_ratio: str, resolution: str, mode: str):
-        _, H, W, _ = image.shape
+    _, H, W, _ = image.shape
 
-        # Convert tensor to PIL for pad_image
-        img_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
-        pil_img = Image.fromarray(img_np)
+    # Convert tensor to PIL for pad_image
+    img_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
+    pil_img = Image.fromarray(img_np)
 
-        padded_pil, padding_info = pad_image(pil_img, aspect_ratio, resolution, mode=mode)
+    # Use average edge color instead of unique color
+    fill_color = get_edge_average_color(pil_img)
 
-        tw = padding_info["target_width"]
-        th = padding_info["target_height"]
-        fill_color = padding_info.get("fill_color", _COLORS_CANDIDATES[0])
-        r, g, b = fill_color
+    padded_pil, padding_info = pad_image(
+        pil_img, aspect_ratio, resolution, fill_color=fill_color, mode=mode
+    )
 
-        # Fill color image (BHWC, 0-1 float)
-        fill = np.full((1, th, tw, 3), [r / 255.0, g / 255.0, b / 255.0], dtype=np.float32)
-        fill_tensor = torch.from_numpy(fill)
+    tw = padding_info["target_width"]
+    th = padding_info["target_height"]
+    r, g, b = fill_color
 
-        # Padded image (BHWC, 0-1 float)
-        padded_np = np.array(padded_pil).astype(np.float32) / 255.0
-        padded_tensor = torch.from_numpy(padded_np).unsqueeze(0)
+    # Fill color image (BHWC, 0-1 float)
+    fill = np.full(
+        (1, th, tw, 3), [r / 255.0, g / 255.0, b / 255.0], dtype=np.float32
+    )
+    fill_tensor = torch.from_numpy(fill)
 
-        return (
-            padding_info["pad_left"],
-            padding_info["pad_right"],
-            padding_info["pad_top"],
-            padding_info["pad_bottom"],
-            tw,
-            th,
-            padding_info["aspect_ratio"],
-            padding_info["resolution"],
-            fill_tensor,
-            padded_tensor,
-        )
+    # Padded image (BHWC, 0-1 float)
+    padded_np = np.array(padded_pil).astype(np.float32) / 255.0
+    padded_tensor = torch.from_numpy(padded_np).unsqueeze(0)
+
+    # Outpaint mask: 1.0 = fill area, 0.0 = original content
+    pl = padding_info["pad_left"]
+    pt = padding_info["pad_top"]
+    mask = np.zeros((th, tw), dtype=np.float32)
+    mask[:pt, :] = 1.0              # top
+    mask[pt + H:, :] = 1.0          # bottom
+    mask[:, :pl] = 1.0              # left
+    mask[:, pl + W:] = 1.0          # right
+    mask_tensor = torch.from_numpy(mask).unsqueeze(0)
+
+    return (
+        padding_info["pad_left"],
+        padding_info["pad_right"],
+        padding_info["pad_top"],
+        padding_info["pad_bottom"],
+        tw,
+        th,
+        padding_info["aspect_ratio"],
+        padding_info["resolution"],
+        fill_tensor,
+        padded_tensor,
+        mask_tensor,
+    )
 
 
 NODE_CLASS_MAPPINGS = {"GeminiPadCalculator": GeminiPadCalculator}
