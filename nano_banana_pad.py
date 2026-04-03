@@ -438,23 +438,23 @@ class GeminiPadCalculator:
             }
         }
 
-    RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT", "INT", "STRING", "STRING", "IMAGE", "IMAGE", "MASK")
-    RETURN_NAMES = (
-        "pad_left",
-        "pad_right",
-        "pad_top",
-        "pad_bottom",
-        "target_w",
-        "target_h",
-        "aspect_ratio",
-        "resolution",
-        "fill_color",
-        "padded_image",
-        "outpaint_mask",
-    )
+        RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT", "INT", "STRING", "STRING", "IMAGE", "IMAGE", "MASK")
+        RETURN_NAMES = (
+            "pad_left",
+            "pad_right",
+            "pad_top",
+            "pad_bottom",
+            "target_w",
+            "target_h",
+            "aspect_ratio",
+            "resolution",
+            "fill_color",
+            "padded_image",
+            "outpaint_mask",
+        )
 
-    FUNCTION = "calculate"
-    CATEGORY = "image/padding"
+        FUNCTION = "calculate"
+        CATEGORY = "image/padding"
 
     def calculate(self, image, aspect_ratio: str, resolution: str, mode: str):
     _, H, W, _ = image.shape
