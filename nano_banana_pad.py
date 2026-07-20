@@ -436,6 +436,12 @@ class GeminiPadCalculator:
                 "aspect_ratio": ("STRING", {"default": "auto"}),
                 "resolution": ("STRING", {"default": "auto"}),
                 "mode": (VALID_FIT_MODES, {"default": "superior"}),
+                # "unique": fill the padding with a color absent from the image
+                # (magenta first) so fill-residue detection / seam repair can find
+                # any leftover pad. "edge_average": blend the border in with the
+                # mean edge color. Default keeps the historical edge_average
+                # behaviour; the outpainting-v3 workflow selects "unique".
+                "fill_mode": (["edge_average", "unique"], {"default": "edge_average"}),
             }
         }
 
@@ -469,15 +475,19 @@ class GeminiPadCalculator:
     FUNCTION = "calculate"
     CATEGORY = "image/padding"
 
-    def calculate(self, image, aspect_ratio: str, resolution: str, mode: str):
+    def calculate(self, image, aspect_ratio: str, resolution: str, mode: str, fill_mode: str = "edge_average"):
         _, H, W, _ = image.shape
 
         # Convert tensor to PIL for pad_image
         img_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
         pil_img = Image.fromarray(img_np)
 
-        # Use average edge color instead of unique color
-        fill_color = get_edge_average_color(pil_img)
+        # "unique" picks a color guaranteed absent from the image so leftover pad
+        # can be detected/repaired downstream; "edge_average" blends the border.
+        if fill_mode == "unique":
+            fill_color = find_unique_fill_color(pil_img)
+        else:
+            fill_color = get_edge_average_color(pil_img)
 
         padded_pil, padding_info = pad_image(
             pil_img, aspect_ratio, resolution, fill_color=fill_color, mode=mode
