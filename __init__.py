@@ -15,10 +15,23 @@ from .nano_banana_pad import (
     NODE_CLASS_MAPPINGS as PAD_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as PAD_NODE_DISPLAY_NAME_MAPPINGS,
 )
+from .outpaint_extras import (
+    NODE_CLASS_MAPPINGS as EXTRA_NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as EXTRA_NODE_DISPLAY_NAME_MAPPINGS,
+)
 
 
-def _get_access_token(service_account_b64: str) -> tuple[str, str]:
+def _get_access_token(
+    service_account_b64: str,
+    scope: str = "https://www.googleapis.com/auth/generative-language",
+) -> tuple[str, str]:
     """Generate OAuth2 access token from base64-encoded service account JSON.
+
+    Args:
+        service_account_b64: base64-encoded service account JSON.
+        scope: OAuth scope to request. Use the generative-language scope for the
+            AI Studio (generativelanguage.googleapis.com) endpoint, or the
+            cloud-platform scope for Vertex AI (aiplatform.googleapis.com).
 
     Returns:
         Tuple of (access_token, project_id)
@@ -35,7 +48,7 @@ def _get_access_token(service_account_b64: str) -> tuple[str, str]:
 
     payload = {
         "iss": client_email,
-        "scope": "https://www.googleapis.com/auth/cloud-platform",
+        "scope": scope,
         "aud": "https://oauth2.googleapis.com/token",
         "iat": now,
         "exp": now + 3600,
@@ -85,11 +98,19 @@ def _get_access_token(service_account_b64: str) -> tuple[str, str]:
     return access_token, project_id
 
 
-SAFETY_SETTINGS = [
+# generativelanguage.googleapis.com (AI Studio) only accepts these HarmCategory
+# enum values. The IMAGE_* and JAILBREAK categories are Vertex-only and cause a
+# 400 ("Invalid value at 'safety_settings[..].category'") on this endpoint.
+GLA_SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
+]
+
+# Vertex AI (aiplatform.googleapis.com) additionally supports image-specific
+# categories and a jailbreak category.
+VERTEX_SAFETY_SETTINGS = GLA_SAFETY_SETTINGS + [
     {"category": "HARM_CATEGORY_IMAGE_HATE", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_IMAGE_HARASSMENT", "threshold": "OFF"},
@@ -97,11 +118,18 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_JAILBREAK", "threshold": "OFF"},
 ]
 
+GLA_SCOPE = "https://www.googleapis.com/auth/generative-language"
+VERTEX_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+
 
 class GeminiImageGenerate:
     """ComfyUI node for Gemini image generation via Vertex AI."""
 
     MODELS = [
+        # Vertex AI (aiplatform) publisher model names — used with backend="vertex".
+        "gemini-3-pro-image",
+        "gemini-3.1-flash-image",
+        # AI Studio (generativelanguage) names — used with backend="generativelanguage".
         "gemini-3-pro-image-preview",
         "gemini-3.1-flash-image-preview",
     ]
@@ -125,6 +153,7 @@ class GeminiImageGenerate:
                 "resolution": ("STRING", {"default": "1K"}),
             },
             "optional": {
+                "backend": (["generativelanguage", "vertex"], {"default": "generativelanguage"}),
                 "custom_model": ("STRING", {"default": ""}),
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
@@ -154,6 +183,7 @@ class GeminiImageGenerate:
         location: str,
         aspect_ratio: str,
         resolution: str,
+        backend: str = "generativelanguage",
         custom_model: str = "",
         image_2: torch.Tensor = None,
         image_3: torch.Tensor = None,
@@ -175,15 +205,27 @@ class GeminiImageGenerate:
             img_b64 = self._tensor_to_base64(img)
             parts.append({"inline_data": {"mime_type": "image/png", "data": img_b64}})
 
-        # Authenticate via service account
-        access_token, project_id = _get_access_token(service_account_base64)
+        # Authenticate via service account and pick the endpoint. The Vertex AI
+        # path (aiplatform) requires the project to have Vertex access to the
+        # publisher model; many keys only have AI Studio (generativelanguage)
+        # access, so that is the default.
+        if backend == "vertex":
+            access_token, project_id = _get_access_token(
+                service_account_base64, VERTEX_SCOPE
+            )
+            url = f"https://aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:generateContent"
+            safety_settings = VERTEX_SAFETY_SETTINGS
+        else:
+            access_token, _ = _get_access_token(service_account_base64, GLA_SCOPE)
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            safety_settings = GLA_SAFETY_SETTINGS
 
-        # Build request
-        url = f"https://aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:generateContent"
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
         }
+        # NOTE: the REST API key is camelCase "safetySettings"; the snake_case
+        # form is silently ignored (leaving default safety filters on).
         payload = {
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
@@ -193,7 +235,7 @@ class GeminiImageGenerate:
                     "imageSize": resolution,
                 },
             },
-            "safety_settings": SAFETY_SETTINGS,
+            "safetySettings": safety_settings,
         }
 
         # Call API with exponential backoff on 429
@@ -337,9 +379,11 @@ NODE_CLASS_MAPPINGS = {
     "GeminiComposite": GeminiComposite,
 }
 NODE_CLASS_MAPPINGS.update(PAD_NODE_CLASS_MAPPINGS)
+NODE_CLASS_MAPPINGS.update(EXTRA_NODE_CLASS_MAPPINGS)
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "GeminiImageGenerate": "Gemini Image Generate",
     "GeminiComposite": "Gemini Composite",
 }
 NODE_DISPLAY_NAME_MAPPINGS.update(PAD_NODE_DISPLAY_NAME_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(EXTRA_NODE_DISPLAY_NAME_MAPPINGS)
