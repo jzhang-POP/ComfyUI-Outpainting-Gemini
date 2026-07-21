@@ -159,6 +159,11 @@ class GeminiImageGenerate:
                 "image_3": ("IMAGE",),
                 "image_4": ("IMAGE",),
                 "image_5": ("IMAGE",),
+                "image_6": ("IMAGE",),
+                "image_7": ("IMAGE",),
+                "image_8": ("IMAGE",),
+                "image_9": ("IMAGE",),
+                "image_10": ("IMAGE",),
             },
         }
 
@@ -189,13 +194,18 @@ class GeminiImageGenerate:
         image_3: torch.Tensor = None,
         image_4: torch.Tensor = None,
         image_5: torch.Tensor = None,
+        image_6: torch.Tensor = None,
+        image_7: torch.Tensor = None,
+        image_8: torch.Tensor = None,
+        image_9: torch.Tensor = None,
+        image_10: torch.Tensor = None,
     ):
         if model == "custom" and custom_model:
             model = custom_model
 
         # Collect all provided images
         images = [image]
-        for img in [image_2, image_3, image_4, image_5]:
+        for img in [image_2, image_3, image_4, image_5, image_6, image_7, image_8, image_9, image_10]:
             if img is not None:
                 images.append(img)
 
