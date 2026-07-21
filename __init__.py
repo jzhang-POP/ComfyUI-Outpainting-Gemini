@@ -210,11 +210,30 @@ class GeminiImageGenerate:
         if model == "custom" and custom_model:
             model = custom_model
 
-        # Collect all provided images
+        # Collect all provided images. A connected-but-empty tensor (0 px, e.g. an
+        # unselected LoadImage or an empty crop/mask upstream) would crash the PNG
+        # encoder with "cannot write empty image", so skip empties and name the
+        # slot in the log. The required `image` being empty is a hard error.
+        def _nonempty(t) -> bool:
+            return t is not None and t.ndim == 4 and t.shape[1] > 0 and t.shape[2] > 0
+
+        if not _nonempty(image):
+            raise ValueError(
+                "GeminiImageGenerate: the required `image` input is empty (0 px) — "
+                "check the node feeding image slot 1."
+            )
+
         images = [image]
-        for img in [image_2, image_3, image_4, image_5, image_6, image_7, image_8, image_9, image_10]:
-            if img is not None:
-                images.append(img)
+        for idx, img in enumerate(
+            [image_2, image_3, image_4, image_5, image_6, image_7, image_8, image_9, image_10],
+            start=2,
+        ):
+            if img is None:
+                continue
+            if not _nonempty(img):
+                print(f"[Gemini] skipping empty image_{idx} (0 px) — check the node feeding that slot")
+                continue
+            images.append(img)
 
         # Build parts: text prompt + all images as inline_data
         parts = [{"text": prompt}]
