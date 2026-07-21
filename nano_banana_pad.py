@@ -433,8 +433,8 @@ class GeminiPadCalculator:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "aspect_ratio": ("STRING", {"default": "auto"}),
-                "resolution": ("STRING", {"default": "auto"}),
+                "aspect_ratio": (VALID_ASPECT_RATIOS, {"default": "auto"}),
+                "resolution": (VALID_RESOLUTIONS, {"default": "auto"}),
                 "mode": (VALID_FIT_MODES, {"default": "superior"}),
                 # "unique": fill the padding with a color absent from the image
                 # (magenta first) so fill-residue detection / seam repair can find
