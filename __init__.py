@@ -151,6 +151,12 @@ class GeminiImageGenerate:
                 "location": ("STRING", {"default": "us-central1"}),
                 "aspect_ratio": ("STRING", {"default": "1:1"}),
                 "resolution": ("STRING", {"default": "1K"}),
+                # Cache-buster only: NOT sent to Gemini (the REST API has no seed).
+                # ComfyUI caches a node whose inputs are unchanged, so with fixed
+                # params it would never re-call the API. A changing seed changes the
+                # cache key, forcing a fresh (stochastic) generation each run.
+                # Set the control to "fixed" to reuse the cached result instead.
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "control_after_generate": True}),
             },
             "optional": {
                 "backend": (["generativelanguage", "vertex"], {"default": "generativelanguage"}),
@@ -188,6 +194,7 @@ class GeminiImageGenerate:
         location: str,
         aspect_ratio: str,
         resolution: str,
+        seed: int = 0,  # cache-buster only; intentionally unused (not sent to Gemini)
         backend: str = "generativelanguage",
         custom_model: str = "",
         image_2: torch.Tensor = None,
