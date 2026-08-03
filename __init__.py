@@ -151,6 +151,12 @@ class GeminiImageGenerate:
                 "location": ("STRING", {"default": "us-central1"}),
                 "aspect_ratio": ("STRING", {"default": "1:1"}),
                 "resolution": ("STRING", {"default": "1K"}),
+                # Cache-buster only: NOT sent to Gemini (the REST API has no seed).
+                # ComfyUI caches a node whose inputs are unchanged, so with fixed
+                # params it would never re-call the API. A changing seed changes the
+                # cache key, forcing a fresh (stochastic) generation each run.
+                # Set the control to "fixed" to reuse the cached result instead.
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "control_after_generate": True}),
             },
             "optional": {
                 "backend": (["generativelanguage", "vertex"], {"default": "generativelanguage"}),
@@ -159,6 +165,11 @@ class GeminiImageGenerate:
                 "image_3": ("IMAGE",),
                 "image_4": ("IMAGE",),
                 "image_5": ("IMAGE",),
+                "image_6": ("IMAGE",),
+                "image_7": ("IMAGE",),
+                "image_8": ("IMAGE",),
+                "image_9": ("IMAGE",),
+                "image_10": ("IMAGE",),
             },
         }
 
@@ -183,21 +194,46 @@ class GeminiImageGenerate:
         location: str,
         aspect_ratio: str,
         resolution: str,
+        seed: int = 0,  # cache-buster only; intentionally unused (not sent to Gemini)
         backend: str = "generativelanguage",
         custom_model: str = "",
         image_2: torch.Tensor = None,
         image_3: torch.Tensor = None,
         image_4: torch.Tensor = None,
         image_5: torch.Tensor = None,
+        image_6: torch.Tensor = None,
+        image_7: torch.Tensor = None,
+        image_8: torch.Tensor = None,
+        image_9: torch.Tensor = None,
+        image_10: torch.Tensor = None,
     ):
         if model == "custom" and custom_model:
             model = custom_model
 
-        # Collect all provided images
+        # Collect all provided images. A connected-but-empty tensor (0 px, e.g. an
+        # unselected LoadImage or an empty crop/mask upstream) would crash the PNG
+        # encoder with "cannot write empty image", so skip empties and name the
+        # slot in the log. The required `image` being empty is a hard error.
+        def _nonempty(t) -> bool:
+            return t is not None and t.ndim == 4 and t.shape[1] > 0 and t.shape[2] > 0
+
+        if not _nonempty(image):
+            raise ValueError(
+                "GeminiImageGenerate: the required `image` input is empty (0 px) — "
+                "check the node feeding image slot 1."
+            )
+
         images = [image]
-        for img in [image_2, image_3, image_4, image_5]:
-            if img is not None:
-                images.append(img)
+        for idx, img in enumerate(
+            [image_2, image_3, image_4, image_5, image_6, image_7, image_8, image_9, image_10],
+            start=2,
+        ):
+            if img is None:
+                continue
+            if not _nonempty(img):
+                print(f"[Gemini] skipping empty image_{idx} (0 px) — check the node feeding that slot")
+                continue
+            images.append(img)
 
         # Build parts: text prompt + all images as inline_data
         parts = [{"text": prompt}]
